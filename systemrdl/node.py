@@ -2,7 +2,7 @@ import re
 import itertools
 from copy import deepcopy, copy
 from collections import deque
-from typing import TYPE_CHECKING, Optional, Iterator, Any, List, Dict, Union
+from typing import TYPE_CHECKING, Optional, Iterator, Any, List, Dict, Union, Set
 
 from . import component as comp
 from . import rdltypes
@@ -11,6 +11,7 @@ from .core import rdlformatcode, helpers
 if TYPE_CHECKING:
     from .compiler import RDLEnvironment
     from markdown import Markdown
+
 
 class Node:
     """
@@ -22,7 +23,13 @@ class Node:
 
     """
 
-    def __init__(self, inst: comp.Component, env: 'RDLEnvironment', parent: Optional['Node']):
+    def __init__(
+        self,
+        inst: comp.Component,
+        env: "RDLEnvironment",
+        parent: Optional["Node"],
+        ignore=False,
+    ):
         # Generic Node constructor.
         # Do not call directly. Use factory() static method instead
         self.env = env
@@ -37,11 +44,10 @@ class Node:
         return "<%s %s at 0x%x>" % (
             self.__class__.__qualname__,
             self.get_path(),
-            id(self)
+            id(self),
         )
 
-
-    def __deepcopy__(self, memo: Dict[int, Any]) -> 'Node':
+    def __deepcopy__(self, memo: Dict[int, Any]) -> "Node":
         """
         Deepcopy the node overlay.
         Members that are not part of the overlay (component tree) are not
@@ -60,9 +66,10 @@ class Node:
                 setattr(result, k, deepcopy(v, memo))
         return result
 
-
     @staticmethod
-    def _factory(inst: comp.Component, env: 'RDLEnvironment', parent: Optional['Node']=None) -> 'Node':
+    def _factory(
+        inst: comp.Component, env: "RDLEnvironment", parent: Optional["Node"] = None
+    ) -> "Node":
         if isinstance(inst, comp.Field):
             return FieldNode(inst, env, parent)
         elif isinstance(inst, comp.Reg):
@@ -78,8 +85,7 @@ class Node:
         else:
             raise RuntimeError
 
-
-    def unrolled(self) -> Iterator['Node']:
+    def unrolled(self) -> Iterator["Node"]:
         """
         Returns an iterator that provides unrolled nodes for this instance
 
@@ -91,19 +97,20 @@ class Node:
         .. versionadded:: 1.20.0
         """
         cls = type(self)
-        if isinstance(self, AddressableNode) and self.is_array: # pylint: disable=no-member
+        if isinstance(self, AddressableNode) and self.is_array:  # pylint: disable=no-member
             # Is an array. Yield a Node object for each instance
-            range_list = [range(n) for n in self.array_dimensions] # pylint: disable=no-member
+            range_list = [range(n) for n in self.array_dimensions]  # pylint: disable=no-member
             for idxs in itertools.product(*range_list):
                 N = cls(self.inst, self.env, self.parent)
-                N.current_idx = idxs # type: ignore
+                N.current_idx = idxs  # type: ignore
                 yield N
         else:
             # not an array. Nothing to unroll
             yield cls(self.inst, self.env, self.parent)
 
-
-    def children(self, unroll: bool=False, skip_not_present: bool=True) -> Iterator['Node']:
+    def children(
+        self, unroll: bool = False, skip_not_present: bool = True
+    ) -> Iterator["Node"]:
         """
         Returns an iterator that provides nodes for all immediate children of
         this component.
@@ -124,23 +131,31 @@ class Node:
         for child_inst in self.inst.children:
             if skip_not_present:
                 # Check if property ispresent == False
-                if not child_inst.properties.get('ispresent', True):
+                if not child_inst.properties.get("ispresent", True):
                     # ispresent was explicitly set to False. Skip it
                     continue
 
-            if unroll and isinstance(child_inst, comp.AddressableComponent) and child_inst.is_array:
+            if (
+                unroll
+                and isinstance(child_inst, comp.AddressableComponent)
+                and child_inst.is_array
+            ):
                 assert child_inst.array_dimensions is not None
                 # Unroll the array
                 range_list = [range(n) for n in child_inst.array_dimensions]
                 for idxs in itertools.product(*range_list):
                     N = Node._factory(child_inst, self.env, self)
-                    N.current_idx = idxs # type: ignore # pylint: disable=attribute-defined-outside-init
+                    N.current_idx = idxs  # type: ignore # pylint: disable=attribute-defined-outside-init
                     yield N
             else:
                 yield Node._factory(child_inst, self.env, self)
 
-
-    def descendants(self, unroll: bool=False, skip_not_present: bool=True, in_post_order: bool=False) -> Iterator['Node']:
+    def descendants(
+        self,
+        unroll: bool = False,
+        skip_not_present: bool = True,
+        in_post_order: bool = False,
+    ) -> Iterator["Node"]:
         """
         Returns an iterator that provides nodes for all descendants of this
         component.
@@ -172,8 +187,7 @@ class Node:
             if not in_post_order:
                 yield from child.descendants(unroll, skip_not_present, in_post_order)
 
-
-    def signals(self, skip_not_present: bool=True) -> Iterator['SignalNode']:
+    def signals(self, skip_not_present: bool = True) -> Iterator["SignalNode"]:
         """
         Returns an iterator that provides nodes for all immediate signals of
         this component.
@@ -197,9 +211,7 @@ class Node:
                 # If encountered a non-signal, no reason to continue iterating
                 break
 
-
-
-    def fields(self, skip_not_present: bool=True) -> Iterator['FieldNode']:
+    def fields(self, skip_not_present: bool = True) -> Iterator["FieldNode"]:
         """
         Returns an iterator that provides nodes for all immediate fields of
         this component.
@@ -218,8 +230,9 @@ class Node:
             if isinstance(child, FieldNode):
                 yield child
 
-
-    def registers(self, unroll: bool=False, skip_not_present: bool=True) -> Iterator['RegNode']:
+    def registers(
+        self, unroll: bool = False, skip_not_present: bool = True
+    ) -> Iterator["RegNode"]:
         """
         Returns an iterator that provides nodes for all immediate registers of
         this component.
@@ -241,9 +254,8 @@ class Node:
             if isinstance(child, RegNode):
                 yield child
 
-
     @property
-    def owning_addrmap(self) -> Optional['AddrmapNode']:
+    def owning_addrmap(self) -> Optional["AddrmapNode"]:
         """
         Returns the enclosing addrmap that owns this node.
 
@@ -261,8 +273,7 @@ class Node:
             assert self.parent is not None
             return self.parent.owning_addrmap
 
-
-    def get_child_by_name(self, inst_name: str) -> Optional['Node']:
+    def get_child_by_name(self, inst_name: str) -> Optional["Node"]:
         """
         Returns an immediate child :class:`~Node` whose instance name matches ``inst_name``
 
@@ -283,8 +294,7 @@ class Node:
             return None
         return Node._factory(child_inst, self.env, self)
 
-
-    def find_by_path(self, path: str) -> Optional['Node']:
+    def find_by_path(self, path: str) -> Optional["Node"]:
         """
         Finds the descendant node that is located at the relative path
         Returns ``None`` if not found
@@ -307,7 +317,7 @@ class Node:
         IndexError
             If an array index in the path is invalid
         """
-        pathparts = path.split('.')
+        pathparts = path.split(".")
         current_node = self
         for pathpart in pathparts:
             # If parent reference, jump upwards
@@ -317,11 +327,14 @@ class Node:
                 continue
 
             # .. otherwise continue parsing the path
-            m = re.fullmatch(r'^(\w+)((?:\[(?:\d+|0[xX][\da-fA-F]+)\])*)$', pathpart)
+            m = re.fullmatch(r"^(\w+)((?:\[(?:\d+|0[xX][\da-fA-F]+)\])*)$", pathpart)
             if not m:
                 raise ValueError("Invalid path")
             inst_name, array_suffix = m.group(1, 2)
-            idx_list = [int(s, 0) for s in re.findall(r'\[(\d+|0[xX][\da-fA-F]+)\]', array_suffix)]
+            idx_list = [
+                int(s, 0)
+                for s in re.findall(r"\[(\d+|0[xX][\da-fA-F]+)\]", array_suffix)
+            ]
 
             current_node = current_node.get_child_by_name(inst_name)
             if current_node is None:
@@ -337,7 +350,7 @@ class Node:
                     if len(idx_list) != len(current_node.inst.array_dimensions):
                         raise IndexError("Wrong number of array dimensions")
 
-                    current_node.current_idx = [] # pylint: disable=attribute-defined-outside-init
+                    current_node.current_idx = []  # pylint: disable=attribute-defined-outside-init
                     for i, idx in enumerate(idx_list):
                         if idx >= current_node.inst.array_dimensions[i]:
                             raise IndexError("Array index out of range")
@@ -347,8 +360,7 @@ class Node:
 
         return current_node
 
-
-    def get_property(self, prop_name: str, **kwargs: Any)-> Any:
+    def get_property(self, prop_name: str, **kwargs: Any) -> Any:
         """
         Gets the SystemRDL component property
 
@@ -375,13 +387,15 @@ class Node:
         """
         ovr_default = False
         default = None
-        if 'default' in kwargs:
+        if "default" in kwargs:
             ovr_default = True
-            default = kwargs.pop('default')
+            default = kwargs.pop("default")
 
         # Check for stray kwargs
         if kwargs:
-            raise TypeError("got an unexpected keyword argument '%s'" % list(kwargs.keys())[0])
+            raise TypeError(
+                "got an unexpected keyword argument '%s'" % list(kwargs.keys())[0]
+            )
 
         if prop_name not in self.inst.properties:
             # Was not assigned by the user
@@ -390,7 +404,9 @@ class Node:
                 return default
 
             # Otherwise, return its default value based on the property's rules
-            rule = self.env.property_rules.lookup_property(prop_name, include_soft_udp=True)
+            rule = self.env.property_rules.lookup_property(
+                prop_name, include_soft_udp=True
+            )
 
             # Is it even a valid property or allowed for this component type?
             if rule is None:
@@ -411,17 +427,24 @@ class Node:
             prop_value = prop_value.get_resolved_ref(self)
         elif isinstance(prop_value, list):
             # Inspect array and resolve any references
-            prop_value = rdltypes.references.resolve_node_refs_in_array(self, prop_value)
+            prop_value = rdltypes.references.resolve_node_refs_in_array(
+                self, prop_value
+            )
         elif rdltypes.is_user_struct(type(prop_value)):
-            prop_value = rdltypes.references.resolve_node_refs_in_struct(self, prop_value)
+            prop_value = rdltypes.references.resolve_node_refs_in_struct(
+                self, prop_value
+            )
         elif (prop_name == "desc") and self.env.dedent_desc:
             prop_value = helpers.dedent_text(prop_value)
 
         return prop_value
 
-
-
-    def list_properties(self, list_all: bool=False, include_native: bool=True, include_udp: bool=True) -> List[str]:
+    def list_properties(
+        self,
+        list_all: bool = False,
+        include_native: bool = True,
+        include_udp: bool = True,
+    ) -> List[str]:
         """
         Lists properties associated with this node.
         By default, only lists properties that were explicitly set. If ``list_all`` is
@@ -442,7 +465,7 @@ class Node:
         """
 
         # Importing here to avoid a circular import
-        from .properties.user_defined import ExternalUserProperty # pylint: disable=import-outside-toplevel
+        from .properties.user_defined import ExternalUserProperty  # pylint: disable=import-outside-toplevel
 
         if list_all:
             props = []
@@ -463,14 +486,21 @@ class Node:
             else:
                 props = []
                 for prop_name in self.inst.properties.keys():
-                    if include_native and prop_name in self.env.property_rules.rdl_properties:
+                    if (
+                        include_native
+                        and prop_name in self.env.property_rules.rdl_properties
+                    ):
                         props.append(prop_name)
-                    if include_udp and prop_name in self.env.property_rules.user_properties:
+                    if (
+                        include_udp
+                        and prop_name in self.env.property_rules.user_properties
+                    ):
                         props.append(prop_name)
                 return props
 
-
-    def get_path_segment(self, array_suffix: str="[{index:d}]", empty_array_suffix: str="[]") -> str:
+    def get_path_segment(
+        self, array_suffix: str = "[{index:d}]", empty_array_suffix: str = "[]"
+    ) -> str:
         """
         Gets the hierarchical path segment for just this node. This includes the
         instance name and any array suffixes.
@@ -485,8 +515,9 @@ class Node:
         # pylint: disable=unused-argument
         return self.inst.inst_name
 
-
-    def get_path_segments(self, array_suffix: str="[{index:d}]", empty_array_suffix: str="[]") -> List[str]:
+    def get_path_segments(
+        self, array_suffix: str = "[{index:d}]", empty_array_suffix: str = "[]"
+    ) -> List[str]:
         """
         Gets a list of path segments that represent the hierarchical path.
 
@@ -501,8 +532,12 @@ class Node:
             segs = []
         return segs
 
-
-    def get_path(self, hier_separator: str=".", array_suffix: str="[{index:d}]", empty_array_suffix: str="[]") -> str:
+    def get_path(
+        self,
+        hier_separator: str = ".",
+        array_suffix: str = "[{index:d}]",
+        empty_array_suffix: str = "[]",
+    ) -> str:
         """
         Generate an absolute path string to this node
 
@@ -536,8 +571,14 @@ class Node:
         segs = self.get_path_segments(array_suffix, empty_array_suffix)
         return hier_separator.join(segs)
 
-
-    def get_rel_path(self, ref: 'Node', uplevel: str="^", hier_separator: str=".", array_suffix: str="[{index:d}]", empty_array_suffix: str="[]") -> str:
+    def get_rel_path(
+        self,
+        ref: "Node",
+        uplevel: str = "^",
+        hier_separator: str = ".",
+        array_suffix: str = "[{index:d}]",
+        empty_array_suffix: str = "[]",
+    ) -> str:
         """
         Generate a relative path string to this node with respect to a reference node.
 
@@ -595,8 +636,9 @@ class Node:
         # 3. remaining segments in self_segs_fmt is the rest of the path
         return hier_separator.join(self_segs_fmt)
 
-
-    def get_html_desc(self, markdown_inst: Optional['Markdown']=None) -> Optional[str]:
+    def get_html_desc(
+        self, markdown_inst: Optional["Markdown"] = None
+    ) -> Optional[str]:
         """
         Translates the node's 'desc' property into HTML.
 
@@ -624,11 +666,10 @@ class Node:
         .. versionchanged:: 1.6
             Added ``markdown_inst`` option.
         """
-        desc_str = self.get_property('desc')
+        desc_str = self.get_property("desc")
         if desc_str is None:
             return None
         return rdlformatcode.rdlfc_to_html(desc_str, self, md=markdown_inst)
-
 
     def get_html_name(self) -> Optional[str]:
         """
@@ -645,11 +686,10 @@ class Node:
 
         .. versionadded:: 1.8
         """
-        name_str = self.get_property('name', default=None)
+        name_str = self.get_property("name", default=None)
         if name_str is None:
             return None
         return rdlformatcode.rdlfc_to_html(name_str, self, is_desc=False)
-
 
     @property
     def inst_name(self) -> str:
@@ -657,6 +697,48 @@ class Node:
         Name of instantiated element
         """
         return self.inst.inst_name
+
+    @property
+    def ignore(self) -> bool:
+        return self.inst.ignore
+
+    def set_ignore(self, val: bool) -> None:
+        self.inst.ignore = val
+
+    @property
+    def unique(self) -> bool:
+        return self.inst.unique
+
+    def set_unique(self, val: bool) -> None:
+        self.inst.unique = val
+
+    @property
+    def rebuild(self) -> bool:
+        return self.inst.rebuild
+
+    def set_rebuild(self, val: bool) -> None:
+        self.inst.rebuild = val
+
+    @property
+    def ignore_idxes(self) -> Set[int]:
+        return self.inst.ignore_idxes
+
+    def append_ignore_idxes(self, val: List[int]) -> None:
+        self.inst.ignore_idxes.update(val)
+
+    @property
+    def gen_test(self) -> bool:
+        return self.inst.gen_test
+
+    def set_gen_test(self, val: bool) -> None:
+        self.inst.gen_test = val
+
+    @property
+    def run_test(self) -> bool:
+        return self.inst.run_test
+
+    def set_run_test(self, val: bool) -> None:
+        self.inst.run_test = val
 
     @property
     def type_name(self) -> Optional[str]:
@@ -735,7 +817,7 @@ class Node:
         return self.inst.external
 
     @property
-    def cpuif_reset(self) -> 'Optional[SignalNode]':
+    def cpuif_reset(self) -> "Optional[SignalNode]":
         """
         Returns a reference to the nearest cpuif_reset signal in the enclosing
         hierarchy.
@@ -747,12 +829,11 @@ class Node:
         current_node = self
         while current_node is not None:
             for signal in current_node.signals():
-                if signal.get_property('cpuif_reset'):
+                if signal.get_property("cpuif_reset"):
                     return signal
             current_node = current_node.parent
 
         return None
-
 
     def __eq__(self, other: object) -> bool:
         """
@@ -763,23 +844,30 @@ class Node:
             return NotImplemented
         return self.get_path() == other.get_path()
 
-#===============================================================================
+
+# ===============================================================================
 class AddressableNode(Node):
     """
     Base-class for any kind of node that can have an address
     """
 
-    def __init__(self, inst: comp.AddressableComponent, env: 'RDLEnvironment', parent: Optional[Node]):
+    def __init__(
+        self,
+        inst: comp.AddressableComponent,
+        env: "RDLEnvironment",
+        parent: Optional[Node],
+    ):
         super().__init__(inst, env, parent)
 
         #: List of current array indexes this node is referencing where the last
         #: item in this list iterates the most frequently
         #:
         #: If None, then the current index is unknown
-        self.current_idx = None # type: Optional[List[int]]
+        self.current_idx = None  # type: Optional[List[int]]
 
-
-    def get_path_segment(self, array_suffix: str="[{index:d}]", empty_array_suffix: str="[]") -> str:
+    def get_path_segment(
+        self, array_suffix: str = "[{index:d}]", empty_array_suffix: str = "[]"
+    ) -> str:
         # Extends get_path_segment() in order to append any array suffixes
         path_segment = super().get_path_segment(array_suffix, empty_array_suffix)
 
@@ -797,7 +885,6 @@ class AddressableNode(Node):
         else:
             return path_segment
 
-
     def clear_lineage_index(self) -> None:
         """
         Resets this node's, as well as all parent node array indexes to
@@ -810,7 +897,6 @@ class AddressableNode(Node):
 
         if isinstance(self.parent, AddressableNode):
             self.parent.clear_lineage_index()
-
 
     def zero_lineage_index(self) -> None:
         """
@@ -825,7 +911,6 @@ class AddressableNode(Node):
         if isinstance(self.parent, AddressableNode):
             self.parent.zero_lineage_index()
 
-
     @property
     def raw_address_offset(self) -> int:
         """
@@ -838,7 +923,6 @@ class AddressableNode(Node):
         """
         assert isinstance(self.inst, comp.AddressableComponent)
         return self.inst.addr_offset
-
 
     @property
     def address_offset(self) -> int:
@@ -855,7 +939,9 @@ class AddressableNode(Node):
         """
         if self.is_array:
             if self.current_idx is None:
-                raise ValueError("Index of array element must be known to derive address")
+                raise ValueError(
+                    "Index of array element must be known to derive address"
+                )
 
             # Calculate the "flattened" index of a general multidimensional array
             # For example, a component array declared as:
@@ -878,7 +964,6 @@ class AddressableNode(Node):
 
         return offset
 
-
     @property
     def raw_absolute_address(self) -> int:
         """
@@ -895,7 +980,6 @@ class AddressableNode(Node):
             return self.parent.raw_absolute_address + self.raw_address_offset
         else:
             return self.raw_address_offset
-
 
     @property
     def absolute_address(self) -> int:
@@ -917,7 +1001,6 @@ class AddressableNode(Node):
         else:
             return self.address_offset
 
-
     @property
     def size(self) -> int:
         """
@@ -927,7 +1010,6 @@ class AddressableNode(Node):
         """
         # must be overridden
         raise NotImplementedError
-
 
     @property
     def total_size(self) -> int:
@@ -946,7 +1028,6 @@ class AddressableNode(Node):
         else:
             return self.size
 
-
     @property
     def is_array(self) -> bool:
         """
@@ -954,7 +1035,6 @@ class AddressableNode(Node):
         """
         assert isinstance(self.inst, comp.AddressableComponent)
         return self.inst.is_array
-
 
     @property
     def array_dimensions(self) -> Optional[List[int]]:
@@ -967,7 +1047,6 @@ class AddressableNode(Node):
         assert isinstance(self.inst, comp.AddressableComponent)
         return self.inst.array_dimensions
 
-
     @property
     def array_stride(self) -> Optional[int]:
         """
@@ -978,7 +1057,8 @@ class AddressableNode(Node):
         assert isinstance(self.inst, comp.AddressableComponent)
         return self.inst.array_stride
 
-#===============================================================================
+
+# ===============================================================================
 class VectorNode(Node):
     """
     Base-class for any kind of node that is vector-like.
@@ -1025,10 +1105,10 @@ class VectorNode(Node):
         return self.inst.low
 
 
-#===============================================================================
+# ===============================================================================
 class RootNode(Node):
     @property
-    def top(self) -> 'AddrmapNode':
+    def top(self) -> "AddrmapNode":
         """
         Returns the top-level addrmap node
         """
@@ -1038,11 +1118,13 @@ class RootNode(Node):
             return child
         raise RuntimeError
 
-#===============================================================================
+
+# ===============================================================================
 class SignalNode(VectorNode):
     pass
 
-#===============================================================================
+
+# ===============================================================================
 class FieldNode(VectorNode):
     def get_global_type_name(self, separator: str = "__") -> Optional[str]:
         name = super().get_global_type_name(separator)
@@ -1055,14 +1137,14 @@ class FieldNode(VectorNode):
             suffix = ""
         elif self.inst.original_def.type_name is None:
             # is an anonymous definition. No extra suffix needed
-            suffix =  ""
+            suffix = ""
         elif "fieldwidth" in self.list_properties():
             # fieldwidth was explicitly set.
             # This type name is already sufficiently distinct
-            suffix =  ""
+            suffix = ""
         elif self.width == 1:
             # field width is the default. Skip suffix
-            suffix =  ""
+            suffix = ""
         else:
             suffix = "_w%d" % self.width
 
@@ -1084,13 +1166,20 @@ class FieldNode(VectorNode):
         (Any hardware-writable field is inherently volatile)
         """
 
-        hw = self.get_property('hw')
+        hw = self.get_property("hw")
         return (
-            (hw in (rdltypes.AccessType.rw, rdltypes.AccessType.rw1,
-                    rdltypes.AccessType.w, rdltypes.AccessType.w1))
-            or self.get_property('counter')
-            or bool(self.get_property('hwset'))
-            or bool(self.get_property('hwclr'))
+            (
+                hw
+                in (
+                    rdltypes.AccessType.rw,
+                    rdltypes.AccessType.rw1,
+                    rdltypes.AccessType.w,
+                    rdltypes.AccessType.w1,
+                )
+            )
+            or self.get_property("counter")
+            or bool(self.get_property("hwset"))
+            or bool(self.get_property("hwclr"))
         )
 
     @property
@@ -1098,40 +1187,54 @@ class FieldNode(VectorNode):
         """
         Field is writable by software
         """
-        sw = self.get_property('sw')
+        sw = self.get_property("sw")
 
-        return sw in (rdltypes.AccessType.rw, rdltypes.AccessType.rw1,
-                        rdltypes.AccessType.w, rdltypes.AccessType.w1)
+        return sw in (
+            rdltypes.AccessType.rw,
+            rdltypes.AccessType.rw1,
+            rdltypes.AccessType.w,
+            rdltypes.AccessType.w1,
+        )
 
     @property
     def is_sw_readable(self) -> bool:
         """
         Field is readable by software
         """
-        sw = self.get_property('sw')
+        sw = self.get_property("sw")
 
-        return sw in (rdltypes.AccessType.rw, rdltypes.AccessType.rw1,
-                        rdltypes.AccessType.r)
+        return sw in (
+            rdltypes.AccessType.rw,
+            rdltypes.AccessType.rw1,
+            rdltypes.AccessType.r,
+        )
 
     @property
     def is_hw_writable(self) -> bool:
         """
         Field is writable by hardware
         """
-        hw = self.get_property('hw')
+        hw = self.get_property("hw")
 
-        return hw in (rdltypes.AccessType.rw, rdltypes.AccessType.rw1,
-                        rdltypes.AccessType.w, rdltypes.AccessType.w1)
+        return hw in (
+            rdltypes.AccessType.rw,
+            rdltypes.AccessType.rw1,
+            rdltypes.AccessType.w,
+            rdltypes.AccessType.w1,
+        )
 
     @property
     def is_hw_readable(self) -> bool:
         """
         Field is readable by hardware
         """
-        hw = self.get_property('hw')
+        hw = self.get_property("hw")
 
-        return hw in (rdltypes.AccessType.rw, rdltypes.AccessType.rw1,
-                        rdltypes.AccessType.r)
+        return hw in (
+            rdltypes.AccessType.rw,
+            rdltypes.AccessType.rw1,
+            rdltypes.AccessType.r,
+        )
 
     @property
     def implements_storage(self) -> bool:
@@ -1154,16 +1257,16 @@ class FieldNode(VectorNode):
             # Storage element, if any, resides in the alias's primary.
             return False
 
-        sw = self.get_property('sw')
-        hw = self.get_property('hw')
-        onread = self.get_property('onread')
+        sw = self.get_property("sw")
+        hw = self.get_property("hw")
+        onread = self.get_property("onread")
 
         # Aliases of a primary may have additive access modes that imply
         # that the primary actually implements storage.
         # accumulate access modes
         for alias_field in self.aliases():
-            sw += alias_field.get_property('sw')
-            onread = onread or alias_field.get_property('onread')
+            sw += alias_field.get_property("sw")
+            onread = onread or alias_field.get_property("onread")
 
         # 9.4.1, Table 12
         if sw in (rdltypes.AccessType.rw, rdltypes.AccessType.rw1):
@@ -1172,30 +1275,30 @@ class FieldNode(VectorNode):
         if hw == rdltypes.AccessType.rw:
             # Hardware can read and write, implying a storage element
             return True
-        if (sw in (rdltypes.AccessType.w, rdltypes.AccessType.w1)) and (hw == rdltypes.AccessType.r):
+        if (sw in (rdltypes.AccessType.w, rdltypes.AccessType.w1)) and (
+            hw == rdltypes.AccessType.r
+        ):
             # Write-only register visible to hardware is stored
             return True
-
 
         if onread is not None:
             # 9.6.1-c: Onread side-effects imply storage regardless of whether
             # or not the field is writable by sw
             return True
 
-
-        if self.get_property('hwset') or self.get_property('hwclr'):
+        if self.get_property("hwset") or self.get_property("hwclr"):
             # Not in spec, but these imply that a storage element exists
             return True
 
-        if self.get_property('counter'):
+        if self.get_property("counter"):
             # All counters implicitly implement storage
             return True
 
-        if self.get_property('intr'):
+        if self.get_property("intr"):
             # All interrupt fields implicitly implement storage
             return True
 
-        if self.get_property('stickybit') or self.get_property('sticky'):
+        if self.get_property("stickybit") or self.get_property("sticky"):
             # All sticky fields implicitly implement storage
             return True
 
@@ -1209,7 +1312,7 @@ class FieldNode(VectorNode):
 
         .. versionadded:: 1.21
         """
-        if not self.get_property('counter'):
+        if not self.get_property("counter"):
             # Not a counter!
             return False
 
@@ -1230,7 +1333,6 @@ class FieldNode(VectorNode):
         # No up/down properties were set. Assume up-counter
         return True
 
-
     @property
     def is_down_counter(self) -> bool:
         """
@@ -1239,7 +1341,7 @@ class FieldNode(VectorNode):
 
         .. versionadded:: 1.21
         """
-        if not self.get_property('counter'):
+        if not self.get_property("counter"):
             # Not a counter!
             return False
 
@@ -1248,7 +1350,6 @@ class FieldNode(VectorNode):
                 return True
 
         return False
-
 
     @property
     def is_alias(self) -> bool:
@@ -1262,9 +1363,8 @@ class FieldNode(VectorNode):
         assert isinstance(self.parent, RegNode)
         return self.parent.is_alias
 
-
     @property
-    def alias_primary(self) -> 'FieldNode':
+    def alias_primary(self) -> "FieldNode":
         """
         Returns the FieldNode that is associated with this alias's primary register.
 
@@ -1282,7 +1382,6 @@ class FieldNode(VectorNode):
         assert isinstance(primary_field, FieldNode)
         return primary_field
 
-
     @property
     def has_aliases(self) -> bool:
         """
@@ -1295,8 +1394,7 @@ class FieldNode(VectorNode):
             return True
         return False
 
-
-    def aliases(self, skip_not_present: bool = True) -> Iterator['FieldNode']:
+    def aliases(self, skip_not_present: bool = True) -> Iterator["FieldNode"]:
         """
         Returns an iterator of all the fields that are aliases of this primary field
 
@@ -1316,19 +1414,21 @@ class FieldNode(VectorNode):
                 # not found in this alias
                 continue
 
-            if skip_not_present and not alias_field.get_property('ispresent'):
+            if skip_not_present and not alias_field.get_property("ispresent"):
                 continue
 
             yield alias_field
 
 
-
-#===============================================================================
+# ===============================================================================
 class RegNode(AddressableNode):
-
     @property
     def size(self) -> int:
-        return self.get_property('regwidth') // 8
+        try:
+            return self.get_property("regwidth") // 8
+        except ValueError:
+            print("could not convert size for", {self.inst_name})
+            return 32
 
     @property
     def is_virtual(self) -> bool:
@@ -1390,7 +1490,7 @@ class RegNode(AddressableNode):
         .. versionadded:: 1.22
         """
         for field in self.fields():
-            if field.get_property('intr'):
+            if field.get_property("intr"):
                 return True
         return False
 
@@ -1404,10 +1504,9 @@ class RegNode(AddressableNode):
         .. versionadded:: 1.22
         """
         for field in self.fields():
-            if field.get_property('haltenable') or field.get_property('haltmask'):
+            if field.get_property("haltenable") or field.get_property("haltmask"):
                 return True
         return False
-
 
     @property
     def is_alias(self) -> bool:
@@ -1420,9 +1519,8 @@ class RegNode(AddressableNode):
         assert isinstance(self.inst, comp.Reg)
         return self.inst.is_alias
 
-
     @property
-    def alias_primary(self) -> 'RegNode':
+    def alias_primary(self) -> "RegNode":
         """
         Returns the RegNode of this alias's primary register.
 
@@ -1451,7 +1549,6 @@ class RegNode(AddressableNode):
 
         return primary_reg
 
-
     @property
     def has_aliases(self) -> bool:
         """
@@ -1463,8 +1560,7 @@ class RegNode(AddressableNode):
         assert isinstance(self.inst, comp.Reg)
         return bool(self.inst._alias_names)
 
-
-    def aliases(self, skip_not_present: bool = True) -> Iterator['RegNode']:
+    def aliases(self, skip_not_present: bool = True) -> Iterator["RegNode"]:
         """
         Returns an iterator of all the registers that are aliases of this primary register
 
@@ -1482,7 +1578,7 @@ class RegNode(AddressableNode):
             alias_reg = self.parent.get_child_by_name(reg_name)
             assert isinstance(alias_reg, RegNode)
 
-            if skip_not_present and not alias_reg.get_property('ispresent'):
+            if skip_not_present and not alias_reg.get_property("ispresent"):
                 continue
 
             if self.is_array and alias_reg.is_array:
@@ -1493,30 +1589,27 @@ class RegNode(AddressableNode):
             yield alias_reg
 
 
-
-
-#===============================================================================
+# ===============================================================================
 class RegfileNode(AddressableNode):
-
     @property
     def size(self) -> int:
         return get_group_node_size(self)
 
-#===============================================================================
+
+# ===============================================================================
 class AddrmapNode(AddressableNode):
-
     @property
     def size(self) -> int:
         return get_group_node_size(self)
 
-#===============================================================================
-class MemNode(AddressableNode):
 
+# ===============================================================================
+class MemNode(AddressableNode):
     @property
     def size(self) -> int:
-        memwidth = max(self.get_property('memwidth'), 8)
+        memwidth = max(self.get_property("memwidth"), 8)
         entry_size = helpers.roundup_pow2(memwidth) // 8
-        num_entries = self.get_property('mementries')
+        num_entries = self.get_property("mementries")
         return entry_size * num_entries
 
     @property
@@ -1526,10 +1619,14 @@ class MemNode(AddressableNode):
 
         .. versionadded:: 1.21
         """
-        sw = self.get_property('sw')
+        sw = self.get_property("sw")
 
-        return sw in (rdltypes.AccessType.rw, rdltypes.AccessType.rw1,
-                        rdltypes.AccessType.w, rdltypes.AccessType.w1)
+        return sw in (
+            rdltypes.AccessType.rw,
+            rdltypes.AccessType.rw1,
+            rdltypes.AccessType.w,
+            rdltypes.AccessType.w1,
+        )
 
     @property
     def is_sw_readable(self) -> bool:
@@ -1538,12 +1635,16 @@ class MemNode(AddressableNode):
 
         .. versionadded:: 1.21
         """
-        sw = self.get_property('sw')
+        sw = self.get_property("sw")
 
-        return sw in (rdltypes.AccessType.rw, rdltypes.AccessType.rw1,
-                        rdltypes.AccessType.r)
+        return sw in (
+            rdltypes.AccessType.rw,
+            rdltypes.AccessType.rw1,
+            rdltypes.AccessType.r,
+        )
 
-#===============================================================================
+
+# ===============================================================================
 def get_group_node_size(node: Union[AddrmapNode, RegfileNode]) -> int:
     """
     Shared getter for AddrmapNode and RegfileNode's "size" property
