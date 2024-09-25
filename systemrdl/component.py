@@ -2,7 +2,7 @@ import operator
 import functools
 from copy import deepcopy
 from collections import OrderedDict
-from typing import Optional, List, Dict, TYPE_CHECKING, Any
+from typing import Optional, List, Dict, TYPE_CHECKING, Any, Set
 
 if TYPE_CHECKING:
     from typing import TypeVar
@@ -87,6 +87,24 @@ class Component:
 
         #: Name of instantiated element
         self.inst_name = None # type: Optional[str]
+
+
+        self.ignore = False
+
+
+        self.unique = True
+        
+
+        self.rebuild = False
+
+
+        self.ignore_idxes = set()
+
+
+        self.gen_test = False
+
+
+        self.run_test = False
 
         #: Reference to original :class:`~systemrdl.component.Component`
         #: definition this instance is derived from.
